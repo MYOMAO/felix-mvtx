@@ -7,11 +7,11 @@ class FakeHitRate(IBTest):
         IBTest.__init__(self, name, cru, ru_list)
 
         self.duration = 300 # s
-        self.set_trigger_period(3564*25/2) # ns 3564*25 ns -> 11 kHz
+        self.set_trigger_period(3564*25/9) # ns 3564*25 ns -> 11 kHz
         self.trigger_mode = TriggerMode.CONTINUOUS
         self.trigger_source = trigger_handler.TriggerSource.SEQUENCER
         self.send_pulses = False
-        
+
     def _configure_stave(self, ru):
         ch = Alpide(ru, chipid=0xF) # broadcast
         configure_chip(ch, linkspeed=self.link_speed,
@@ -29,7 +29,7 @@ class FakeHitRateWithPulsing(FakeHitRate):
         self.duration = 30 # s
         self.set_trigger_period(3564*25/2) # ns
         self.send_pulses = True
-        
+
     def _configure_stave(self, ru):
         IBTest._configure_stave(self, ru)
 

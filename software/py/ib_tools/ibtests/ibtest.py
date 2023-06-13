@@ -519,6 +519,7 @@ class IBTest:
         #    if not success:
         #        raise Exception('GBTx12 configuration failed on RU {}'.format(ru.name))
 
+        ru.calibration_lane.reset()
         ru.clean_datapath()
         time.sleep(0.33)
         # fix timing issues with LTU
@@ -569,8 +570,9 @@ class IBTest:
                 raise ValueError(f"Trigger mode {self.trigger_mode.name} not supported with trigger sequencer")
         if self.dry_run:
             ru.trigger_handler.set_opcode_gating(True)
-        if self.trigger_source == trigger_handler.TriggerSource.GBTx2:
-            assert ru.trigger_handler.is_timebase_synced(), f"RU {ru.name} is not timebase synced!"
+        # in case of FELIX, timebase sync is not required
+        #if self.trigger_source == trigger_handler.TriggerSource.GBTx2:
+        #    assert ru.trigger_handler.is_timebase_synced(), f"RU {ru.name} is not timebase synced!"
         self.log.debug('RU trigger configured, period {} BC'.format(trigger_period_bc))
 
         # setup transceivers

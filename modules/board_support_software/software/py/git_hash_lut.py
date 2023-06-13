@@ -3,6 +3,11 @@
 # RU_mainFPGA releases
 # https://gitlab.cern.ch/alice-its-wp10-firmware/RU_mainFPGA/-/releases
 ru_githash2ver_lut = {
+    0x68A755D6 : "mvtx_v1.21.0",
+    0xE87616AE : "v1.21.0",
+    0xBC8B70E7 : "v1.20.0",
+    0xCB8D624E : "v1.19.0",
+    0x8010E7EB : "v1.19.0-prebuild",
     0x757F563E : "mvtx_v1.18.0.2",  # 600 Mbps version
     0x43CFB8A6 : "mvtx_v1.18.0.1",  # 600 Mbps version
     0x95A9053F : "mvtx_v1.18.0",

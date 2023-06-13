@@ -69,6 +69,7 @@ if __name__ == "__main__":
     argparser.add_argument('--debug', action='store_true', help='Set logging level to DEBUG.')
     argparser.add_argument('--dry_run', action='store_true', help='Enable DRY RUN mode.')
     argparser.add_argument('--conf_only', default=False, action='store_true', help='Only configure but do not run the test.')
+    argparser.add_argument('--sor', default=False, action='store_true', help='Execute start_of_run procedure, when --conf_only is selected')
     args = argparser.parse_args()
 
     if args.fpath_out is None:
@@ -165,7 +166,8 @@ if __name__ == "__main__":
         if args.duration >= 0: test.set_duration(args.duration)
 
         if args.conf_only:
-            pass
+            if args.sor:
+                test.start_of_run()
         elif args.runs > -1:
             for irun in range(args.runs):
                 test.launch(irun)

@@ -29,7 +29,6 @@ using namespace std;
 
 constexpr uint8_t FLX_WORD_SZ = 32;
 
-
 struct decoder_t
 {
   std::ifstream file;
@@ -58,43 +57,50 @@ struct decoder_t
 
   int thscan_nInj;
   int thscan_nChg;
-  bool isThrTuning = false;
+  int feeid = -1;
 
-  decoder_t(std::string& flName):
-    filebuf_size(8192 * 1001),
-    lanebuf_size(1024 * 1024),
-    hitsbuf_size(10000),
-    nbytesleft(0),
-    nbytesread(0),
-    thscan_nInj(0),
-    thscan_nChg(0)
+  bool isThr = false;
+  bool isTun = false;
+
+  uint32_t evt_cnts[Trg::BitMap::nBitMap] = {};
+
+  decoder_t(std::string& flName)
+    : filebuf_size(8192 * 1001)
+    , lanebuf_size(1024 * 1024)
+    , hitsbuf_size(10000)
+    , nbytesleft(0)
+    , nbytesread(0)
+    , thscan_nInj(0)
+    , thscan_nChg(0)
   {
     // TODO: check meaningfullness of params...
     file.open(flName, std::ios::binary);
-    if (! file.is_open()) {
+    if ( !file.is_open() )
+    {
       std::cerr << "Error while trying to open file: " << strerror(errno);
       std::cerr << ". Exiting" << std::endl;
       exit(-1);
     }
 
-    assert(! (filebuf_size % 8192));
+    assert( !(filebuf_size % 8192) );
     // memory allocations
-    filebuffer = reinterpret_cast<uint8_t*>(_mm_malloc(filebuf_size * sizeof(uint8_t),
-                                            4096) );
-    lanebuffer = reinterpret_cast<uint8_t*>(_mm_malloc(nlanes * lanebuf_size * sizeof(uint8_t),
-                                            4096) );
-    hitsbuffer = reinterpret_cast<uint32_t*>(_mm_malloc(nlanes * hitsbuf_size * sizeof(uint32_t),
+    filebuffer = reinterpret_cast<uint8_t*>( _mm_malloc(filebuf_size * sizeof(uint8_t),
                                              4096) );
+    lanebuffer = reinterpret_cast<uint8_t*>( _mm_malloc(nlanes * lanebuf_size * sizeof(uint8_t),
+                                             4096) );
+    hitsbuffer = reinterpret_cast<uint32_t*>( _mm_malloc(nlanes * hitsbuf_size * sizeof(uint32_t),
+                                              4096) );
 
-    if (!filebuffer || !lanebuffer || !hitsbuffer) {
+    if ( !filebuffer || !lanebuffer || !hitsbuffer )
+    {
       std::cerr << "Error while allocating memory: " << strerror(errno);
       std::cerr << ". Exiting." << std::endl;
       exit(-1);
     }
-
     ptr = filebuffer;
     trigger = {};
   }
+
 
   ~decoder_t()
   {
@@ -103,25 +109,34 @@ struct decoder_t
     _mm_free(hitsbuffer);
   }
 
+
   inline void packet_init(bool reset_hits = false)
   {
-    for (uint8_t i = 0; i < nlanes; ++i) {
+    for ( uint8_t i = 0; i < nlanes; ++i )
+    {
       lane_ends[i] = lanebuffer + i * lanebuf_size;
     }
-    if (reset_hits)
+    if ( reset_hits )
+    {
       hits_end = hitsbuffer;
+    }
   }
+
 
   inline bool has_lane_data()
   {
     uint8_t i = 0;
-    for (const auto& lane_end : lane_ends) {
-      if( lane_end != (lanebuffer + i * lanebuf_size))
+    for ( const auto& lane_end : lane_ends )
+    {
+      if ( lane_end != (lanebuffer + i * lanebuf_size) )
+      {
         return true;
+      }
       ++i;
     }
     return false;
   }
+
 
   size_t ptr_pos(uint8_t* _ptr=nullptr)
   {
@@ -143,6 +158,17 @@ void reset_stat()
 }
 
 
+inline void updateTrgEvtCnts(const rdh_t& _rdh, decoder_t*& _decoder)
+{
+      for ( const auto& trg : Trg::allBitMap )
+      {
+        if ( ((_rdh.trgType >> trg) & 1) == 1 )
+        {
+          _decoder->evt_cnts[trg]++;
+        }
+      }
+}
+
 void printStat(const size_t n_events, const size_t n_evt_with_payload, const size_t nTrg)
 {
   std::cout << "Read " << n_events << " events. " << n_evt_with_payload;
@@ -151,9 +177,22 @@ void printStat(const size_t n_events, const size_t n_evt_with_payload, const siz
 }
 
 
+void printTrgCnts(decoder_t* decoder)
+{
+  std::cout << "Trigger counts:" << endl;
+  for ( const auto& trg : Trg::allBitMap )
+  {
+    std::cout << Trg::BitMapName[trg].c_str() << ": " << decoder->evt_cnts[trg] << std::endl;
+  }
+  std::cout << std::endl;
+}
+
+
 void save_block(decoder_t* decoder)
 {
-  ofstream fdump("last_chunk.err", ios::trunc);
+  ostringstream ss;
+  ss << "last_chunk_" << decoder->feeid << ".err";
+  ofstream fdump(ss.str().c_str(), ios::trunc);
   fdump.write(reinterpret_cast<char*>(decoder->filebuffer),
               decoder->ptr - decoder->filebuffer + decoder->nbytesleft);
   fdump.close();
@@ -165,13 +204,16 @@ void meanrms(float* m, float* s, float* data, size_t n)
   float s1 = 0.;
   float s2 = 0.;
   int nn0 = 0;
-  for (size_t i = 0; i < n; ++i)
-    if (data[i] > 0) {
+  for ( size_t i = 0; i < n; ++i )
+  {
+    if ( data[i] > 0 )
+    {
       float x = data[i];
       s1 += x;
       s2 += x * x;
       ++nn0;
     }
+  }
   s1 /= nn0;
   s2 /= nn0;
   *m = s1;
@@ -182,10 +224,12 @@ void meanrms(float* m, float* s, float* data, size_t n)
 static inline void threshold_next_row(float* thrs, float* rmss, float* sumd, float* sumd2,
                                       int nch, int ninj)
 {
-  for (int x = 0; x < 3 * 1024; ++x) {
+  for ( int x = 0; x < 3 * 1024; ++x )
+  {
     float den = sumd[x];
     float m = sumd2[x];
-    if (den > 0) {
+    if ( den > 0 )
+    {
       m /= den;
     }
     float u = den;
@@ -207,7 +251,8 @@ static inline void threshold_next_charge(float* sumd, float* sumd2, int ch, int*
   float V2 = ch2;
   float meandV = 0.5 * (V2 + V1);
 
-  for (int x = 0; x < 3 * 1024; ++x) {
+  for ( int x = 0; x < 3 * 1024; ++x )
+  {
     float f = 1.f/(1.f * ninj);
     float n2 = hist[x] * f;
     float n1 = lasthist[x] * f;
@@ -225,14 +270,9 @@ static inline void fillrowhist(int* hist, uint32_t* hits, int n, int row)
 {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverflow"
-  const __m128i masky=_mm_set_epi8(0x00,0x00,0x03,0xFE,
-                                   0x00,0x00,0x03,0xFE,
-                                   0x00,0x00,0x03,0xFE,
-                                   0x00,0x00,0x03,0xFE);
-  const __m128i mask0=_mm_set_epi8(0x00,0x00,0x00,0x01,
-                                   0x00,0x00,0x00,0x01,
-                                   0x00,0x00,0x00,0x01,
-                                   0x00,0x00,0x00,0x01);
+  const __m128i masky = _mm_set1_epi32(0x000003FE);
+  const __m128i mask0 = _mm_set1_epi32(0x00000001);
+  const __m128i maska = _mm_set1_epi32(0x0000FFFE);
 #pragma GCC diagnostic pop
 
   const __m128i bad = _mm_set1_epi32(3 * 1024); // bad pixel ID
@@ -241,16 +281,20 @@ static inline void fillrowhist(int* hist, uint32_t* hits, int n, int row)
     __m128i a  = _mm_load_si128( (__m128i*)hits);
     __m128i yp = _mm_and_si128 (a, masky);
     __m128i ok = _mm_cmpeq_epi32(yp, y);
-    __m128i t2 = _mm_and_si128(a, mask0);
-    __m128i t3 = _mm_srli_epi32(a, 9);
-    __m128i t4 = _mm_xor_si128 (t3, t2); // FIXME later: yeah... it is unique though
-    __m128i b  = _mm_blendv_epi8(bad, t4, ok); // epi8 is OK, due to ok
 
-    if (n > 3)
+    __m128i t1 = _mm_srli_epi32(a, 1);
+    __m128i t2 = _mm_srli_epi32(a, 9);
+    __m128i t3 = _mm_and_si128(t2, maska);
+    __m128i t4 = _mm_xor_si128 (t1, a);
+    __m128i t5 = _mm_and_si128(t4, mask0);
+    __m128i x  = _mm_or_si128(t3, t5);
+    __m128i b  = _mm_blendv_epi8(bad, x, ok); // epi8 is OK, due to ok
+
+    if ( n > 3 )
       ++hist[_mm_extract_epi32(b, 3)];
-    if (n > 2)
+    if ( n > 2 )
       ++hist[_mm_extract_epi32(b, 2)];
-    if (n > 1)
+    if ( n > 1 )
       ++hist[_mm_extract_epi32(b, 1)];
 
     ++hist[_mm_extract_epi32(b, 0)];
@@ -266,7 +310,8 @@ static inline void transformhits(uint32_t* hits, int n)
   const __m128i masky = _mm_set1_epi32(0x000001FF);
   const __m128i mask0 = _mm_set1_epi32(0x00000001);
   const __m128i maska = _mm_set1_epi32(0x0000FFFE);
-  while (n > 0) {
+  while ( n > 0 )
+  {
     __m128i a =_mm_load_si128( (__m128i*)hits);
 
     __m128i t1 = _mm_srli_epi32(a, 1);  // >> 1 each 4 32'b elements
@@ -294,17 +339,18 @@ static inline void fillhitmap(uint32_t* map, uint32_t* hits, int n)
   const __m128i masky __attribute__( (unused) ) = _mm_set1_epi32(0x01FF0000);
   const __m128i maskx=_mm_set1_epi32(0x00003FFF);
   const __m128i stride=_mm_set1_epi32(3 * 1024);
-  while (n > 0) {
+  while ( n > 0 )
+  {
     __m128i hs = _mm_stream_load_si128( (__m128i*)hits);
     __m128i t1 = _mm_srli_epi32(hs,16);
     __m128i t2 = _mm_mullo_epi32(t1,stride);
     __m128i t3 = _mm_and_si128 (hs,maskx);
     __m128i  a = _mm_add_epi32 (t2,t3  );
-    if (n>3)
+    if ( n > 3 )
       ++map[_mm_extract_epi32(a,3)];
-    if (n>2)
+    if ( n > 2 )
       ++map[_mm_extract_epi32(a,2)];
-    if (n>1)
+    if ( n > 1 )
       ++map[_mm_extract_epi32(a,1)];
 
     ++map[_mm_extract_epi32(a,0)];
@@ -318,8 +364,10 @@ static inline void fillhitmap(uint32_t* map, uint32_t* hits, int n)
 static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf_end,
                           uint8_t& chipId)
 {
-  if (laneptr == laneend)
+  if ( laneptr == laneend )
+  {
     return;
+  }
 
   size_t nhit = 0;
 
@@ -332,18 +380,22 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
   uint8_t chip_header_found = 0;
   uint8_t chip_trailer_found = 0;
 
-  while (laneptr < laneend) {
+  while ( laneptr < laneend )
+  {
     // TODO: check out of bounds problem (better: ensure that the 2 bytes following
     // laneend are readable)
-    if (*laneptr == 0xF1) {  // BUSY ON
+    if ( *laneptr == 0xF1 )
+    {  // BUSY ON
       ++busy_on;
       ++laneptr;
     }
-    else if (*laneptr == 0xF0) { // BUSY OFF
+    else if ( *laneptr == 0xF0 )
+    { // BUSY OFF
       ++busy_off;
       ++laneptr;
     }
-    else if ((*laneptr & 0xF0) == 0xE0) { // EMPTY
+    else if ( (*laneptr & 0xF0) == 0xE0 )
+    { // EMPTY
       chip_header_found = 0;
       chip_trailer_found = 1;
       chipId = laneptr[0] & 0xF;
@@ -352,55 +404,62 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
       busy_on = busy_off = 0;
       laneptr += 2;
     } else {
-      if (chip_header_found) {
-        if ((laneptr[0] & 0xE0) == 0xC0) { // REGION HEADER
+      if ( chip_header_found )
+      {
+        if ( (laneptr[0] & 0xE0) == 0xC0 )
+        { // REGION HEADER
         // TODO: move first region header out of loop, asserting its existence
           reg = laneptr[0] & 0x1F;
           ++laneptr;
         }
-        if ((laneptr[0] & 0xC0) == 0x40) { // DATA SHORT
+        if ( (laneptr[0] & 0xC0) == 0x40 )
+        { // DATA SHORT
           int addr = (laneptr[0] & 0x3F) << 8 | laneptr[1];
           addr |=  (laneId << 19) | (reg << 14);
           hitsbuf_end[nhit++] = addr;
           laneptr += 2;
-        }
-        else if ((laneptr[0] & 0xC0) == 0x00) { // DATA LONG
+        } else if ( (laneptr[0] & 0xC0) == 0x00)
+        { // DATA LONG
           int addr = (laneptr[0] & 0x3F) << 8 | laneptr[1];
           addr |= (laneId << 19) | (reg << 14);
           hitsbuf_end[nhit++] = addr;
 
           uint8_t hitmap = laneptr[2]; // TODO: assert that bit 8 is 0?
-          if (hitmap & 0x01)
+          if ( hitmap & 0x01 )
             hitsbuf_end[nhit++] = addr + 1;
-          if (hitmap & 0x7E) { // provide early out (mostly 2-pixel clusters...)
-            if (hitmap & 0x02)
+          if ( hitmap & 0x7E )
+          { // provide early out (mostly 2-pixel clusters...)
+            if ( hitmap & 0x02 )
               hitsbuf_end[nhit++] = addr + 2;
-            if (hitmap & 0x04)
+            if ( hitmap & 0x04 )
               hitsbuf_end[nhit++] = addr + 3;
-            if (hitmap & 0x08)
+            if ( hitmap & 0x08 )
               hitsbuf_end[nhit++] = addr + 4;
-            if (hitmap & 0x10)
+            if ( hitmap & 0x10 )
               hitsbuf_end[nhit++] = addr + 5;
-            if (hitmap & 0x20)
+            if ( hitmap & 0x20 )
               hitsbuf_end[nhit++] = addr + 6;
-            if (hitmap & 0x40)
+            if ( hitmap & 0x40 )
               hitsbuf_end[nhit++] = addr + 7;
           }
           laneptr += 3;
-        }
-        else if( (laneptr[0] & 0xF0) == 0xB0) { // CHIP TRAILER
+        } else if ( (laneptr[0] & 0xF0) == 0xB0 )
+        { // CHIP TRAILER
           chip_trailer_found = 1;
           busy_on = busy_off = chip_header_found = 0;
           ++laneptr;
-        } else { // ERROR (IDLES and BUSIES should be stripped)
+        } else {
+          // ERROR (IDLES and BUSIES should be stripped)
           printf("ERROR: invalid byte 0x%02X\n", laneptr[0]);
-          while (laneptr != laneend) {
+          while ( laneptr != laneend )
+          {
             printf(" %02X ", *(uint8_t*)laneptr);
             ++laneptr;
           }
         }
       } else { // chip_header
-        if ((laneptr[0] & 0xF0) == 0xA0) {
+        if ( (laneptr[0] & 0xF0) == 0xA0 )
+        {
           chip_header_found = 1;
           chip_trailer_found = 0;
           chipId = laneptr[0] & 0xF;
@@ -408,11 +467,13 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
           // abc = laneptr[1];
           reg = 0;
           laneptr += 2;
-        } else if(laneptr[0] == 0x00) { // padding
+        } else if ( laneptr[0] == 0x00 )
+        { // padding
           ++laneptr;
         } else { // ERROR (IDLES and BUSIES should be stripped)
           printf("ERROR: invalid byte 0x%02X\n", laneptr[0]);
-          while (laneptr != laneend) {
+          while ( laneptr != laneend )
+          {
             printf(" %02X ", *(uint8_t*)laneptr);
             ++laneptr;
           }
@@ -420,7 +481,8 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
       }  // data
     } // busy_on, busy_off, chip_empty, other
   }  // while
-  if (! chip_trailer_found) {
+  if ( !chip_trailer_found )
+  {
     std::cerr << "ERROR: ALPIDE data end without data trailer" << std::endl;
   }
   hitsbuf_end += nhit;
@@ -431,7 +493,8 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
 static inline void decoder_decode_lanes_into_hits(decoder_t* decoder)
 {
   uint8_t chipId = 0xFF;
-  for (int i = 0; i < decoder->nlanes; ++i) {
+  for ( int i = 0; i < decoder->nlanes; ++i )
+  {
     decode(decoder->lanebuffer + decoder->lanebuf_size * i,
             decoder->lane_ends[i], decoder->hits_end, chipId);
     assert(chipId != 0xFF);
@@ -451,13 +514,14 @@ size_t pull_data(decoder_t* decoder)
   size_t len = (decoder->filebuf_size - decoder->nbytesleft);
   len = (len > 0x1000) ? len & ~0xFFF : len; // in chunks of 256 bytes multiples
   uint64_t n;
-  do {
-    decoder->file.read( (char*)buf_ptr, len);
+  do
+  {
+    decoder->file.read((char*)buf_ptr, len);
     n = decoder->file.gcount();
     len -= n;
     buf_ptr += n;
     nread += n;
-  } while (len > 0 && n > 0);
+  } while ( len > 0 && n > 0 );
 
   return nread;
 }
@@ -473,7 +537,7 @@ enum EXIT_CODE
   N_EXIT_CODE
 };
 
-static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int feeid)
+static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
 {
   rdh_t rdh;
   uint32_t nStopBit = 0;
@@ -484,27 +548,33 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
   bool haspayload = false;
 
 
-  while (true) { // loop over pages in files
-    if (decoder->nbytesleft > 0) {
+  while ( true )
+  { // loop over pages in files
+    if ( decoder->nbytesleft > 0 )
+    {
       bool padding_found = false;
-      while (( *(reinterpret_cast<uint16_t*>(decoder->ptr + 30)) == 0xFFFF) &&\
-             decoder->nbytesleft) {
+      while ( (*(reinterpret_cast<uint16_t*>(decoder->ptr + 30)) == 0xFFFF) &&\
+              decoder->nbytesleft )
+      {
         padding_found  = true;
         decoder->ptr += FLX_WORD_SZ;
         decoder->nbytesleft -= FLX_WORD_SZ;
-        decoder->nbytesleft += (! decoder->nbytesleft) ? pull_data(decoder) : 0;
+        decoder->nbytesleft += (!decoder->nbytesleft) ? pull_data(decoder) : 0;
       }
-      if (padding_found) {
+      if ( padding_found )
+      {
         padding_found = false;
-        ASSERT(! ((decoder->nbytesread + decoder->ptr_pos()) & 0xFF), decoder,
+        ASSERT(!((decoder->nbytesread + decoder->ptr_pos()) & 0xFF), decoder,
                "FLX header is not properly aligned in byte %lu of current chunk, previous packet %ld",
                 decoder->ptr_pos(), decoder->ptr_pos(decoder->prev_packet_ptr));
       }
     }
 
     uint32_t pagesize = 0;
-    if (decoder->nbytesleft >= (2 * FLX_WORD_SZ)) { // at least FLX header and RDH
-      if ( *(reinterpret_cast<uint16_t*>(decoder->ptr + 30)) == 0xAB01) {
+    if ( decoder->nbytesleft >= (2 * FLX_WORD_SZ) )
+    { // at least FLX header and RDH
+      if ( *(reinterpret_cast<uint16_t*>(decoder->ptr + 30)) == 0xAB01 )
+      {
         rdh.decode(decoder->ptr);
         pagesize = (rdh.pageSize + 1) * FLX_WORD_SZ;
       } else {
@@ -512,16 +582,18 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
       }
     }
 
-    if ( (! pagesize) || decoder->nbytesleft < pagesize)  { //pagesize = 0 read rdh
+    if ( !pagesize || decoder->nbytesleft < pagesize )
+    { //pagesize = 0 read rdh
       // at least the RDH needs to be there...
-      if (decoder->nbytesleft < 0) {
+      if ( decoder->nbytesleft < 0 )
+      {
         printf("ERROR: d_nbytesleft: %d, less than zero \n", decoder->nbytesleft);
         return BAD_READ;
       }
 
       size_t nread = pull_data(decoder);
       decoder->nbytesleft += nread;
-      if (! nread)
+      if ( !nread )
         return (decoder->nbytesleft < pagesize) ? BAD_END_FILE : DONE;
 
       continue;
@@ -532,27 +604,30 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
     decoder->ptr    += pagesize;
     decoder->nbytesleft -= pagesize;
 
-    if (! pagesize)
+    if ( !pagesize )
       continue; // TODO...
 
-    if (feeid < 0) {
-      if(rdh.stopBit) {
+    if ( decoder->feeid < 0 )
+    {
+      if( rdh.stopBit )
+      {
         nStopBit++;
       }
 
-      if (std::find(decoder->feeids.cbegin(),
-                    decoder->feeids.cend(), rdh.feeId) \
-          == decoder->feeids.cend()) {
+      if ( std::find(decoder->feeids.cbegin(),
+                     decoder->feeids.cend(), rdh.feeId) ==\
+           decoder->feeids.cend() )
+      {
         decoder->feeids.push_back(rdh.feeId);
-      }
-      else if (nStopBit > 10 * decoder->feeids.size()) {
+      } else if ( nStopBit > 10 * decoder->feeids.size() )
+      {
         return DONE;
       } else {
         continue;
       }
     }
 
-    if (rdh.feeId != feeid)
+    if ( rdh.feeId != decoder->feeid )
       continue;  //TODO: ...
     flx_ptr += 2 * FLX_WORD_SZ; //skip RDH
     // printf("flx_ptr: %d \n", *(uint8_t*)flx_ptr);
@@ -564,22 +639,27 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
            decoder->ptr_pos());
     prev_pck_cnt = rdh.packetCounter;
 
-    if (! rdh.packetCounter) {
+    if ( !rdh.packetCounter )
+    {
       nHB++;
       //TODO add couter per trigger bit asserted in the event
       //TODO check right protocol for SOC/EOC or SOT/EOT
       decoder->packet_init(true);
+      updateTrgEvtCnts(rdh, decoder);
     } else {
-      if (! rdh.stopBit)
+      if ( !rdh.stopBit)
+      {
         ASSERT(! prev_evt_complete, decoder,
                 "Previous event was already complete, byte %ld of current chuck",
                 decoder->ptr_pos());
+      }
     }
     struct tdh_t tdh;
     struct tdt_t tdt;
     struct cdw_t cdw;
     int prev_gbt_cnt = 3;
-    for (size_t iflx = 0; iflx < nFlxWords; ++iflx) {
+    for ( size_t iflx = 0; iflx < nFlxWords; ++iflx )
+    {
       __m256i data = _mm256_stream_load_si256( (__m256i*)flx_ptr);
       const uint16_t gbt_cnt = _mm256_extract_epi16(data, 15) & 0x3FF;
       ASSERT((gbt_cnt - prev_gbt_cnt) <= 3, decoder,
@@ -589,43 +669,56 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
       const uint16_t n_gbt_word = ((gbt_cnt - 1) % 3) + 1;
 
       uint8_t* gbt_word;
-      for(size_t igbt = 0; igbt < n_gbt_word; ++igbt)
+      for( size_t igbt = 0; igbt < n_gbt_word; ++igbt )
       {
         gbt_word = flx_ptr + (igbt * 10);
         uint8_t lane = *(reinterpret_cast<uint8_t*>(gbt_word + 9));
 
-        if (lane == 0xE0) {
+        if ( lane == 0xE0 )
+        {
           // lane heder: needs to be present: TODO: assert this
           //TODO assert first word after RDH and active lanes
           haspayload = false;
-        } else if(lane == 0xE8) { // TRIGGER DATA HEADER (TDH)
+        } else if ( lane == 0xE8 )
+        { // TRIGGER DATA HEADER (TDH)
           tdh.decode(gbt_word);
           header_found = true;
-          if (! tdh.continuation) {
+          if ( !tdh.continuation )
+          {
             //TODO add counter of not continuation triggers
             decoder->trigger.orbit = tdh.orbit;
             decoder->trigger.bc = tdh.bc;
-            if (! tdh.no_data)
+            if ( !tdh.no_data )
+            {
               nTrg_with_data++;
+            }
+            if ( tdh.bc )
+            {
+              updateTrgEvtCnts(rdh, decoder);
+            }
           }
-        } else if (lane == 0xF8) { // CALIBRATION DATA WORD (CDW)
+        } else if ( lane == 0xF8 )
+        { // CALIBRATION DATA WORD (CDW)
           cdw.decode(gbt_word);
-          uint16_t new_row = cdw.user_field & 0xFFFF;
-          uint16_t new_charge = (cdw.user_field >> 16) & 0xFFFF;
-          if ((! decoder->trigger.thscan_inj) ||\
-              (decoder->trigger.thscan_inj == decoder->thscan_nInj)) {
-            if (! decoder->isThrTuning) {
-              ASSERT(new_row >= decoder->trigger.thscan_row, decoder,
-                     "Row not increasing after thscan_injections: previous %d new %d",
-                     decoder->trigger.thscan_row, new_row);
-            }
-
-            if(new_row == decoder->trigger.thscan_row) { // rolling charge at change of row
-              ASSERT(new_charge > decoder->trigger.thscan_chg, decoder,
-                     "Charge not increasing after max thscan_injections: previous %d, new %d [previous row %d current row %d]",
-                     decoder->trigger.thscan_chg, new_charge,
-                     decoder->trigger.thscan_row, new_row);
-            }
+          if ( decoder->isThr )
+          {
+            uint16_t new_row = cdw.user_field & 0xFFFF;
+            uint16_t new_charge = (cdw.user_field >> 16) & 0xFFFF;
+            if ((! decoder->trigger.thscan_inj) ||\
+                (decoder->trigger.thscan_inj == decoder->thscan_nInj)) {
+              if ( !decoder->isTun )
+              {
+                ASSERT(new_row >= decoder->trigger.thscan_row, decoder,
+                       "Row not increasing after thscan_injections: previous %d new %d",
+                       decoder->trigger.thscan_row, new_row);
+              }
+              if (new_row == decoder->trigger.thscan_row)
+              { // rolling charge at change of row
+                ASSERT(new_charge > decoder->trigger.thscan_chg, decoder,
+                       "Charge not increasing after max thscan_injections: previous %d, new %d [previous row %d current row %d]",
+                       decoder->trigger.thscan_chg, new_charge,
+                       decoder->trigger.thscan_row, new_row);
+              }
 //       else
 //       {
 //         if(thscan_current_charge != -1 and rdh['triggers'] != ['EOT'])
@@ -635,30 +728,35 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
 //            new {new_charge}\nRDH: {rdh}"
 //         }
 //       }
-            decoder->trigger.thscan_inj = 1;
-            decoder->trigger.thscan_row = new_row;
-            decoder->trigger.thscan_chg = new_charge;
-          } else {
-            ASSERT(new_row == decoder->trigger.thscan_row, decoder,
-                   "Row not correct before reaching max thscan_injections: expected %d got %d",
-                   decoder->trigger.thscan_row, new_row);
-            ASSERT(new_charge == decoder->trigger.thscan_chg, decoder,
-                   "Charge not correct before reaching max thscan_injections: expected %d got %d, [previous row %d, current row %d observed injections %d]",
-                   decoder->trigger.thscan_chg, new_charge,
-                   decoder->trigger.thscan_row, new_row,
-                   decoder->trigger.thscan_inj);
+              decoder->trigger.thscan_inj = 1;
+              decoder->trigger.thscan_row = new_row;
+              decoder->trigger.thscan_chg = new_charge;
+            } else {
+              ASSERT(new_row == decoder->trigger.thscan_row, decoder,
+                     "Row not correct before reaching max thscan_injections: expected %d got %d",
+                     decoder->trigger.thscan_row, new_row);
+              ASSERT(new_charge == decoder->trigger.thscan_chg, decoder,
+                     "Charge not correct before reaching max thscan_injections: expected %d got %d, [previous row %d, current row %d observed injections %d]",
+                     decoder->trigger.thscan_chg, new_charge,
+                     decoder->trigger.thscan_row, new_row,
+                     decoder->trigger.thscan_inj);
               decoder->trigger.thscan_inj += 1;
+            }
           }
-        } else if(lane == 0xF0) { // lane trailer
+        } else if ( lane == 0xF0 )
+        { // lane trailer
           tdt.decode(gbt_word);
           prev_evt_complete = tdt.packet_done;
-          if (tdt.packet_done) {
+          if ( tdt.packet_done )
+          {
             // TODO add counter and check == no continuation counter
           }
-        } else if(lane == 0xE4) { //DIAGNOSTIC DATA WORD (DDW)
+        } else if (lane == 0xE4)
+        { //DIAGNOSTIC DATA WORD (DDW)
           // TODO add diagnostic dataword decoder
           // to do assert stop bit = 1
-        } else if( ( (lane >> 5) & 0x7) == 0x5) { //IB DIAGNOSTIC DATA
+        } else if ( ((lane >> 5) & 0x7) == 0x5 )
+        { //IB DIAGNOSTIC DATA
           // decode IB diagnostic word
           cerr << "WARNING!!! IB diagnostic data word received and skipped." << endl;
         } else { // lane payload
@@ -675,8 +773,10 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
           decoder->lane_ends[lane] += 9;
         }
 
-        if (prev_evt_complete) {
-          if (decoder->has_lane_data()) {
+        if ( prev_evt_complete )
+        {
+          if ( decoder->has_lane_data() )
+          {
             decoder_decode_lanes_into_hits(decoder);
             decoder->packet_init();
           }
@@ -686,19 +786,20 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder, int fe
       } //for igbt
       flx_ptr += FLX_WORD_SZ;
     }
-    if (rdh.stopBit) {
-      if(haspayload)
-        return (haspayload) ? HB_DATA_DONE : HB_NO_DATA_DONE;
+    if ( rdh.stopBit )
+    {
+      return (haspayload) ? HB_DATA_DONE : HB_NO_DATA_DONE;
     }
   } // while(true)
 }
 
 
-static inline EXIT_CODE check_next_event(decoder_t* decoder, int _feeid)
+static inline EXIT_CODE check_next_event(decoder_t* decoder)
 {
-  EXIT_CODE ret = decoder_read_event_into_lanes(decoder, _feeid);
+    EXIT_CODE ret = decoder_read_event_into_lanes(decoder);
 
-  switch (ret) {
+  switch (ret)
+  {
     case NO_FLX_HEADER:
       ASSERT(false, decoder, "Error reading file, wrong felix header position in byte %ld, previous flx header in byte %ld",
              decoder->ptr_pos(),  decoder->ptr_pos(decoder->prev_packet_ptr));
@@ -718,6 +819,7 @@ static inline EXIT_CODE check_next_event(decoder_t* decoder, int _feeid)
   return ret;
 }
 
+
 void save_file(std::string fname, uint32_t n_row, uint32_t nChipsPerLane, float*& data)
 {
   ofstream fileMap(fname.data(), ios_base::trunc);
@@ -726,14 +828,17 @@ void save_file(std::string fname, uint32_t n_row, uint32_t nChipsPerLane, float*
   fileMap.close();
 }
 
-void run_thrana(struct decoder_t* decoder, string& prefix, int _feeid,
+
+void run_thrana(struct decoder_t* decoder, string& prefix,
                 const int& n_vcasn_ithr = 1)
 {
-  if (! decoder->isThrTuning) {
-    std::cout << "Runing THR analysis for feeid " << _feeid << "..." << std::endl;
+  if ( !decoder->isTun )
+  {
+    std::cout << "Runing THR analysis for feeid " << decoder->feeid << "..." << std::endl;
   } else {
-    std::cout << "Runing THR tunning analysis for feeid " << _feeid;
-    if (n_vcasn_ithr < 0) {
+    std::cout << "Runing THR tunning analysis for feeid " << decoder->feeid;
+    if ( n_vcasn_ithr < 0 )
+    {
       std::cout << ", expected EOX event!!!" << std::endl;
     } else {
       std::cout << " and n " << n_vcasn_ithr << "..." << std::endl;
@@ -741,7 +846,7 @@ void run_thrana(struct decoder_t* decoder, string& prefix, int _feeid,
   }
 
   constexpr uint8_t nChipsPerLane = 3;
-  int16_t n_row = decoder->isThrTuning ? 6 : 512;
+  int16_t n_row = decoder->isTun ? 6 : 512;
   float *thrs  = reinterpret_cast<float*>(_mm_malloc( nChipsPerLane * n_row * 1024 * sizeof(float),
                                           4096) );
   float *rmss  = reinterpret_cast<float*>(_mm_malloc( nChipsPerLane * n_row * 1024 * sizeof(float),
@@ -760,19 +865,25 @@ void run_thrana(struct decoder_t* decoder, string& prefix, int _feeid,
   int iInj = 0;
   int prev_row = -1;
 
-  if (decoder->isThrTuning)
+  if ( decoder->isTun )
+  {
     reset_stat();
+  }
   bzero(rowhist, (nChipsPerLane * 1024 + 1) * sizeof(int) );
   std::array<int, 6> chipRow = { {1, 2, 254, 255, 509, 510} };
-  while (true) {
-    EXIT_CODE ret = check_next_event(decoder, _feeid);
-    if (ret  == DONE) {
+  while ( true )
+  {
+    EXIT_CODE ret = check_next_event(decoder);
+    if ( ret  == DONE )
+    {
       break;
-    } else if (ret == HB_DATA_DONE) {
+    } else if ( ret == HB_DATA_DONE )
+    {
       nHB_with_data++;
       int iRow = decoder->trigger.thscan_row;
       int iChg = decoder->trigger.thscan_chg;
-      if (prev_row != iRow) {
+      if ( prev_row != iRow )
+      {
         printf("Row %4d : ", iRow);
         fflush(stdout);
         ngood = 0;
@@ -782,17 +893,21 @@ void run_thrana(struct decoder_t* decoder, string& prefix, int _feeid,
         prev_row = iRow;
       }
       int nhits = decoder->hits_end - decoder->hitsbuffer;
-      fillrowhist(rowhist, decoder->hitsbuffer, nhits, (decoder->isThrTuning) ? chipRow[iRow] : iRow);
+      fillrowhist(rowhist, decoder->hitsbuffer, nhits, (decoder->isTun) ? chipRow[iRow] : iRow);
       iInj++;
-      if (iInj == decoder->thscan_nInj) {
+      if ( iInj == decoder->thscan_nInj )
+      {
         iInj = 0;
         int nhit = 0;
-        for (int i = 0; i < nChipsPerLane * 1024; ++i)
+        for ( int i = 0; i < nChipsPerLane * 1024; ++i )
+        {
           nhit += rowhist[i];
+        }
 
         ngood += nhit;
         nbad += rowhist[nChipsPerLane * 1024];
-        if (iChg) {
+        if (iChg)
+        {
           threshold_next_charge(sumd, sumd2, iChg,
                                 lastrowhist, rowhist, decoder->thscan_nInj);
         }
@@ -802,7 +917,8 @@ void run_thrana(struct decoder_t* decoder, string& prefix, int _feeid,
         bzero(rowhist, (nChipsPerLane * 1024 + 1) * sizeof(int) );
         iChg++;
       }
-      if (iChg == decoder->thscan_nChg) {
+      if (iChg == decoder->thscan_nChg)
+      {
         printf("thscan_row %4d ", iRow);
         iChg = 0;
         threshold_next_row(thrs + iRow * nChipsPerLane * 1024,
@@ -816,30 +932,33 @@ void run_thrana(struct decoder_t* decoder, string& prefix, int _feeid,
                 nChipsPerLane * 1024);
         printf(" (mean: %5.2f +/- %4.2f ; RMS: %5.2f +/- %4.2f ; good/bad hits: %d / %d)\n",
                m, merr, s, serr, ngood, nbad);
-        if (decoder->isThrTuning && iRow == 5) {
+        if ( decoder->isTun && iRow == 5 )
+        {
           ostringstream fname;
-          fname << prefix << ( (prefix != "") ? "_" : "") << "thr_map_" << _feeid;
+          fname << prefix << ( (prefix != "") ? "_" : "") << "thr_map_" << decoder->feeid;
           fname << "-" << n_vcasn_ithr << ".dat";
           save_file(fname.str().data(), n_row, nChipsPerLane, thrs);
           break;
         }
       }
     }
-    else if (ret == HB_NO_DATA_DONE) {
+    else if ( ret == HB_NO_DATA_DONE )
+    {
       cout << "Event HB " << nHB << "Has not data." << endl;
       continue;
     }
     else
       exit(-1);
   }
-  if (! decoder->isThrTuning) {
+  if ( !decoder->isTun )
+  {
     ostringstream fname;
-    fname << prefix << ( (prefix != "") ? "_" : "") << "thr_map_" << _feeid << ".dat";
+    fname << prefix << ( (prefix != "") ? "_" : "") << "thr_map_" << decoder->feeid << ".dat";
     save_file(fname.str(), n_row, nChipsPerLane, thrs);
 
     fname.str("");
     fname.clear();
-    fname << prefix << ( (prefix != "") ? "_" : "") << "rtn_map_" << _feeid << ".dat";
+    fname << prefix << ( (prefix != "") ? "_" : "") << "rtn_map_" << decoder->feeid << ".dat";
     save_file(fname.str(), n_row, nChipsPerLane, rmss);
   }
   printStat(nHB, nHB_with_data, nTrg_with_data);
@@ -852,9 +971,9 @@ void run_thrana(struct decoder_t* decoder, string& prefix, int _feeid,
 }
 
 
-void run_fhrana(struct decoder_t* decoder, string& prefix, int _feeid)
+void run_fhrana(struct decoder_t* decoder, string& prefix)
 {
-  std::cout << "Runing FHR analysis for feeid " << _feeid << "..." << std::endl;
+  std::cout << "Runing FHR analysis for feeid " << decoder->feeid << "..." << std::endl;
   uint32_t print_hb_cnt = 1000;
   progressbar bar(100);
   ostringstream ss;
@@ -863,35 +982,35 @@ void run_fhrana(struct decoder_t* decoder, string& prefix, int _feeid)
   uint32_t* hitmap = reinterpret_cast<uint32_t*>(_mm_malloc(3 * 1024 * 512 * sizeof(uint32_t), 4096));
   bzero(hitmap, 3 * 1024 * 512 * sizeof(uint32_t));
 
-  while(1)
+  while (true)
   {
-    EXIT_CODE ret = check_next_event(decoder, _feeid);
+    EXIT_CODE ret = check_next_event(decoder);
 
-    if(! (nHB % print_hb_cnt) )
+    if ( !(nHB % print_hb_cnt) )
+    {
       bar.update();
-    if(nHB && (! (nHB % (100 * print_hb_cnt))))
+    }
+    if ( nHB && ( !(nHB % (100 * print_hb_cnt))))
     {
       std::cout << std::endl; bar.reset();
     }
 
-    if(ret  == DONE)
+    if ( ret  == DONE )
+    {
       break;
-    else if(ret == HB_DATA_DONE)
+    } else if ( ret == HB_DATA_DONE )
     {
       nHB_with_data++;
       int nhits = decoder->hits_end - decoder->hitsbuffer;
       transformhits(decoder->hitsbuffer, nhits);
-      if(nhits < 0)
+      if ( nhits < 0 )
       {
         printf("\nERROR IN EVENT %d\n", nHB);
         printf("POS: %d\n", (int)decoder->file.tellg());
-      }
-      else
-      {
+      } else {
         fillhitmap(hitmap, decoder->hitsbuffer, nhits);
       }
-    }
-    else if(ret == HB_NO_DATA_DONE)
+    } else if ( ret == HB_NO_DATA_DONE )
       continue;
     else
       exit(-1);
@@ -899,7 +1018,7 @@ void run_fhrana(struct decoder_t* decoder, string& prefix, int _feeid)
   std::cout << std::endl;
 
   ostringstream fname;
-  fname << prefix << ( (prefix != "") ? "_" : "") << "hitmap_" << _feeid << ".dat";
+  fname << prefix << ( (prefix != "") ? "_" : "") << "hitmap_" << decoder->feeid << ".dat";
   ofstream fhitmap(fname.str().data(), ios_base::trunc);
   fhitmap.write(reinterpret_cast<char*>(hitmap),
                 decoder->nlanes * 1024 * 512 * sizeof(uint32_t) );
@@ -907,10 +1026,10 @@ void run_fhrana(struct decoder_t* decoder, string& prefix, int _feeid)
 
   size_t ntot[decoder->nlanes] = {0, 0, 0};
   size_t ntotal = 0;
-  for(int lane = 0; lane < decoder->nlanes; ++ lane)
+  for ( int lane = 0; lane < decoder->nlanes; ++ lane )
   {
-    for(int y = 0; y < 512; ++y)
-      for(int x = (lane * 1024); x < ( (lane + 1) * 1024); ++x)
+    for ( int y = 0; y < 512; ++y )
+      for ( int x = (lane * 1024); x < ( (lane + 1) * 1024); ++x )
       {
         ntot[lane] += hitmap[y * decoder->nlanes * 1024 + x];
       }
@@ -919,15 +1038,15 @@ void run_fhrana(struct decoder_t* decoder, string& prefix, int _feeid)
   }
   printf("Total number of hits: %lu. \n", ntotal);
   printStat(nHB, nHB_with_data, nTrg_with_data);
-
+  printTrgCnts(decoder);
 }
 
 
-void get_all_feeids(decoder_t* decoder, int _feeid)
+void get_all_feeids(decoder_t* decoder)
 {
-  while(true)
+  while ( true )
   {
-    if(check_next_event(decoder, _feeid) == DONE)
+    if (check_next_event(decoder) == DONE)
       break;
     else
       exit(-1);
@@ -937,9 +1056,9 @@ void get_all_feeids(decoder_t* decoder, int _feeid)
   std::cout << decoder->feeids.size() << " feeids founds." << std::endl;
   ostringstream ss;
   ss << "[ ";
-  for(auto& feeid : decoder->feeids)
+  for ( auto& _feeid : decoder->feeids )
   {
-    ss << feeid << ( (feeid == decoder->feeids.back()) ? "" : ", ");
+    ss << _feeid << ( (_feeid == decoder->feeids.back()) ? "" : ", ");
   }
   ss << " ]";
 
@@ -977,7 +1096,7 @@ int main(int argc, char** argv)
 {
   enum RUN_TEST { RUN_FHR, RUN_THR, RUN_TUNING, NO_RUN_TEST };
   int opt = -1;
-  int feeid = -1;
+  int _feeid = -1;
   int test = -1;
   int thr_inj = 25;
   int thr_chg = 50;
@@ -985,10 +1104,13 @@ int main(int argc, char** argv)
   std::string prefix("");
   std::string filename("/dev/stdin");
 
-  while ((opt = getopt(argc, argv, ":f:hi:n:p:t:")) != -1) {
-    switch (opt) {
+  while ( (opt = getopt(argc, argv, ":f:hi:n:p:t:")) != -1 )
+  {
+    switch (opt)
+    {
       case 'f':
-        if (sscanf(optarg, "%d", &feeid) != 1) {
+        if ( sscanf(optarg, "%d", &_feeid) != 1 )
+        {
           display_help();
           exit(-1);
         }
@@ -1000,13 +1122,15 @@ int main(int argc, char** argv)
         break;
 
       case 'i':
-        if (sscanf(optarg, "%d", &thr_inj) != 1) {
+        if ( sscanf(optarg, "%d", &thr_inj) != 1 )
+        {
           exit(-1);
         }
         break;
 
       case 'n':
-        if (sscanf(optarg, "%d", &n_thr) != 1) {
+        if ( sscanf(optarg, "%d", &n_thr) != 1 )
+        {
           display_help();
           exit(-1);
         }
@@ -1017,7 +1141,8 @@ int main(int argc, char** argv)
         break;
 
       case 't':
-        if (sscanf(optarg, "%d", &test) != 1) {
+        if ( sscanf(optarg, "%d", &test) != 1 )
+        {
           display_help();
           exit(-1);
         }
@@ -1029,12 +1154,12 @@ int main(int argc, char** argv)
     }
   }
 
-  if(optind != argc) //No file given
+  if ( optind != argc ) //No file given
   {
     filename = std::string(argv[optind++]);
   }
 
-  if(optind != argc)
+  if ( optind != argc )
   {
     std::cout << "###ERROR!!! Extra arguments given" << std::endl;
     display_help();
@@ -1046,15 +1171,15 @@ int main(int argc, char** argv)
   std::unique_ptr<decoder_t> decoder = std::make_unique<decoder_t>(filename);
   decoder->thscan_nInj = thr_inj;
   decoder->thscan_nChg = thr_chg;
-
-  if(feeid < 0)
+  decoder->feeid = _feeid;
+  if ( _feeid < 0 )
   {
-    get_all_feeids(decoder.get(), feeid);
+    get_all_feeids(decoder.get());
     exit(0);
   }
 
   RUN_TEST run_test = NO_RUN_TEST;
-  switch(test)
+  switch (test)
   {
     case 0:
       run_test = RUN_FHR;
@@ -1072,7 +1197,7 @@ int main(int argc, char** argv)
       run_test = NO_RUN_TEST;
   }
 
-  if(run_test == NO_RUN_TEST)
+  if (run_test == NO_RUN_TEST)
   {
     std::cout << "### ERROR: no run test provided, doing nothing" << std::endl;
     display_help();
@@ -1082,17 +1207,21 @@ int main(int argc, char** argv)
   switch(run_test)
   {
     case RUN_FHR:
-      run_fhrana(decoder.get(), prefix, feeid);
+      decoder.get()->isThr = false;
+      run_fhrana(decoder.get(), prefix);
       break;
     case RUN_THR:
-      run_thrana(decoder.get(), prefix, feeid);
+      decoder.get()->isThr = true;
+      decoder.get()->isTun = false;
+      run_thrana(decoder.get(), prefix);
       break;
     case RUN_TUNING:
-      decoder.get()->isThrTuning = true;
+      decoder.get()->isThr = true;
+      decoder.get()->isTun = true;
       for (int i = 0; i < n_thr; ++i) {
-        run_thrana(decoder.get(), prefix, feeid, i);
+        run_thrana(decoder.get(), prefix, i);
       }
-      run_thrana(decoder.get(), prefix, feeid, -1);
+      run_thrana(decoder.get(), prefix, -1);
       break;
     default:
       std::cout << "### ERROR: no run test provided, doing nothing" << std::endl;

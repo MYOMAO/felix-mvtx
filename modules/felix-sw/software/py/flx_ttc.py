@@ -36,6 +36,9 @@ class FlxTtc(Roc):
         else:
             self.roc_write(FLXADD['add_ttc_emu_reset'], 0)
 
+    def get_reset(self):
+        return self.roc_read(FLXADD['add_ttc_emu_reset'])
+
     def set_emulator_trig_mode(self, mode, use_gtm=False):
         """ Put emulator in triggered mode """
 
@@ -55,6 +58,10 @@ class FlxTtc(Roc):
             self.roc_write(FLXADD['add_ttc_emu_runmode'], (0x2 | use_gtm_bit))
         else:
             raise ValueError("invalid trigger mode, allowed are only periodic/manual/continuous")
+
+    def get_emulator_runmode(self):
+        """Get value of runmode"""
+        return self.roc_read(FLXADD['add_ttc_emu_runmode'])
 
     def do_manual_phys_trig(self):
         """ Request one physical trigger, works only in manual triggered mode """
@@ -146,8 +153,7 @@ class FlxTtc(Roc):
         self.set_emulator_bcmax(value)
 
     def get_heartbeat_period(self):
-        """Just guessing, no documentation on that...
-        value returned as-is"""
+        """Get value of bunch crossing ID max"""
         return self.roc_read(FLXADD['add_ttc_emu_bcmax']) & 0xFFF
 
     def set_heartbeat_wrap_around(self, wrap_value):

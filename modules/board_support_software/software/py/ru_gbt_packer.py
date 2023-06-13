@@ -7,15 +7,16 @@ from wishbone_module import WishboneModule
 @unique
 class GbtPackerAddress(IntEnum):
     """Memory mapping for the gbt_packer_wishbone"""
-    TIMEOUT_TO_START      = 0
-    TIMEOUT_START_STOP    = 1
-    TIMEOUT_IN_IDLE       = 2
-    RESET                 = 3
-    GBTX_FIFO_EMPTY       = 4
-    LANE_FIFO_EMPTY       = 5
-    PROTOCOL_CONFIG       = 6
-    SKIP_ITS_PAYLOAD      = 7
-    DATA_EXCLUSIVE_PACKET = 8
+    TIMEOUT_TO_START       = 0
+    TIMEOUT_START_STOP     = 1
+    TIMEOUT_IN_IDLE        = 2
+    RESET                  = 3
+    GBTX_FIFO_EMPTY        = 4
+    LANE_FIFO_EMPTY        = 5
+    PROTOCOL_CONFIG        = 6
+    SKIP_ITS_PAYLOAD       = 7
+    DATA_EXCLUSIVE_PACKET  = 8
+    RDH_DET_FIELD_USER_CFG = 9
 
 
 class GbtPacker(WishboneModule):
@@ -121,6 +122,15 @@ class GbtPacker(WishboneModule):
     def clear_data_exclusive_packet(self, commitTransaction=True):
         """Clear the data exclusive packet register of the GBT packer"""
         self.write_data_exclusive_packet(0x0, commitTransaction)
+
+    def write_rdh_det_field_user_cfg(self, value, commitTransaction=True):
+        """Set the rdh detector field user config register of the GBT packer"""
+        assert value | 0x1 == 0x1
+        self.write(GbtPackerAddress.RDH_DET_FIELD_USER_CFG, value, commitTransaction)
+
+    def get_rdh_det_field_user_cfg(self, commitTransaction=True):
+        """Get the rdh detector field user config register of the GBT packer"""
+        return self.read(GbtPackerAddress.RDH_DET_FIELD_USER_CFG, commitTransaction)
 
     # Monitor
 
