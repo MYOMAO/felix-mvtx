@@ -1693,6 +1693,48 @@ class Testbench(object):
             self.logger.info(f"GBTx2 {rdo.gbtx2_swt.check_config(filename=filename, use_xml=True)}")
             self.logger.info(rdo.gbtx2_swt.check_config(filename=filename, use_xml=True))
 
+    def dump_ru_info_ib(self, logfile=None):
+        """Collects info on the status of the Inner Barrel RUs"""
+        if logfile is not None:
+            logger = logging.getLogger()
+            fh = logging.FileHandler(logfile)
+            fh.setLevel(logging.DEBUG)
+            formatter = logging.Formatter("[%(asctime)s]    %(levelname)-10s %(name)-28s %(message)s")
+
+            def fmt_filter(record):
+                record.levelname = f"[{record.levelname}]"
+                record.name = f"[{record.name}]"
+                return True
+
+            fh.setFormatter(formatter)
+            fh.addFilter(fmt_filter) # Adds filter on all handlers
+            logger.addHandler(fh)
+
+        for rdo in self.rdo_list:
+            self.logger.info("*** Dump of RU Info ***")
+            rdo.feeid()
+            rdo.dna()
+            rdo.version(get_pa3=True)
+            rdo.uptime()
+            self.logger.info(f"Input power: {rdo.sca.read_adc_converted(rdo.sca.adc_channels.V_IN):1.3f} V {rdo.sca.read_adc_converted(rdo.sca.adc_channels.I_IN):.3f} A")
+            self.logger.info(f"Optical power: CRU {rdo.sca.read_adc_converted(rdo.sca.adc_channels.I_VTRx1):.2f} uA Trigger {rdo.sca.read_adc_converted(rdo.sca.adc_channels.I_VTRx2):.2f} uA")
+            self.logger.info(f"Temperature {rdo.sysmon.get_temperature():.2f} C")
+            self.logger.info("*** Stave Power Status ***")
+            rdo.powerunit_1.log_values_modules(module_list=[0])
+            self.logger.info(f"{rdo.trigger_handler.dump_config()}")
+            self.logger.info(f"{rdo.trigger_handler.read_counters()}")
+            self.logger.info("*** Data Lane Module ***")
+            self.logger.info(f"Detector Timeout: {rdo.lanes_ib.get_detector_timeout()} (times 6.25ns)")
+            self.logger.info(f"Strip Data Control {rdo.lanes_ib.get_strip_data_control()}")
+            for lane in range(9):
+                self.logger.info(f"Error Signature Lane {lane}: 0x{rdo.lanes_ib.get_error_signature(lane):x}")
+            self.logger.info(f"{rdo.gbt_packer.dump_config()}")
+            self.logger.info(f"{rdo.readout_master.dump_config()}")
+            self.logger.info("*** Datapath Monitor IB ***")
+            dl_counters = rdo.datapath_monitor_ib.read_counters()
+            for i, lane in enumerate(dl_counters):
+                self.logger.info(f"Lane {i}: {lane}")
+
     def dump_all_gbtx_config(self):
         """Dumps the configuration of all GBTx chips"""
         directory = 'logs/gbtx_config_dump/'
@@ -2905,7 +2947,7 @@ class Testbench(object):
         # now reset the PRBS counters and start triggering
         for rdo in self.rdo_list:
             rdo.gth.reset_prbs_counter()
-            #rdo.trigger_handler.sequencer_start()
+            rdo.trigger_handler.sequencer_start()
 
     def setup_prbs_test_gpio(self, chips, rdo=None):
         """Set up the prbs test for the GPIOs (verifying that it is activated).

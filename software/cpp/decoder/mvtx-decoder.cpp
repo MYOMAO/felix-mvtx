@@ -16,6 +16,7 @@ gcc --std=gnu99 -march=native -lm -O3 -o decoder decoder.c
 #include <set>
 #include <sstream>
 #include <vector>
+#include <unordered_map>
 
 #include <immintrin.h>
 #include <mm_malloc.h>
@@ -37,15 +38,16 @@ struct decoder_t
 
   uint32_t filebuf_size;
   uint32_t lanebuf_size;
-  uint32_t hitsbuf_size;
   uint32_t nbytesleft;
   size_t   nbytesread;
   uint8_t* filebuffer;
   uint8_t* lanebuffer;
-  uint32_t* hitsbuffer;
+
+  std::unordered_map < uint64_t, size_t > m_strobeHits = {};
+  std::vector < uint32_t > m_hits = {};
+
 
   std::array<uint8_t*, nlanes> lane_ends;
-  uint32_t* hits_end;
 
   uint8_t*  ptr;
   uint8_t*  prev_packet_ptr;
@@ -67,7 +69,6 @@ struct decoder_t
   decoder_t(std::string& flName)
     : filebuf_size(8192 * 1001)
     , lanebuf_size(1024 * 1024)
-    , hitsbuf_size(10000)
     , nbytesleft(0)
     , nbytesread(0)
     , thscan_nInj(0)
@@ -88,10 +89,9 @@ struct decoder_t
                                              4096) );
     lanebuffer = reinterpret_cast<uint8_t*>( _mm_malloc(nlanes * lanebuf_size * sizeof(uint8_t),
                                              4096) );
-    hitsbuffer = reinterpret_cast<uint32_t*>( _mm_malloc(nlanes * hitsbuf_size * sizeof(uint32_t),
-                                              4096) );
+    m_hits.resize(100000);
 
-    if ( !filebuffer || !lanebuffer || !hitsbuffer )
+    if ( !filebuffer || !lanebuffer )
     {
       std::cerr << "Error while allocating memory: " << strerror(errno);
       std::cerr << ". Exiting." << std::endl;
@@ -106,7 +106,6 @@ struct decoder_t
   {
     _mm_free(filebuffer);
     _mm_free(lanebuffer);
-    _mm_free(hitsbuffer);
   }
 
 
@@ -118,7 +117,8 @@ struct decoder_t
     }
     if ( reset_hits )
     {
-      hits_end = hitsbuffer;
+      clearVec(m_hits);
+      m_strobeHits.clear();
     }
   }
 
@@ -147,32 +147,24 @@ struct decoder_t
 
 uint32_t nHB = 0,
          nHB_with_data = 0,
-         nTrg_with_data = 0;
+         nStrobe = 0,
+         nPhysTrg_in_HB = 0;
+
+std::vector<uint64_t> physTrg_bco;
 
 
 void reset_stat()
 {
   nHB = 0;
   nHB_with_data = 0;
-  nTrg_with_data = 0;
+  nStrobe = 0;
 }
 
-
-inline void updateTrgEvtCnts(const rdh_t& _rdh, decoder_t*& _decoder)
-{
-      for ( const auto& trg : Trg::allBitMap )
-      {
-        if ( ((_rdh.trgType >> trg) & 1) == 1 )
-        {
-          _decoder->evt_cnts[trg]++;
-        }
-      }
-}
 
 void printStat(const size_t n_events, const size_t n_evt_with_payload, const size_t nTrg)
 {
   std::cout << "Read " << n_events << " events. " << n_evt_with_payload;
-  std::cout << " with ALPIDE payload and " << nTrg << " triggers" << std::endl;
+  std::cout << " with ALPIDE payload and " << nTrg << " strobes" << std::endl;
   std::cout << std::endl;
 }
 
@@ -360,16 +352,59 @@ static inline void fillhitmap(uint32_t* map, uint32_t* hits, int n)
   }
 }
 
+void check_APE(const uint8_t &laneptr)
+{
+  switch (laneptr)
+  {
+    case 0xF2:
+      std::cerr << " APE_STRIP_START" << std::endl;
+      break;
+    case 0xF4:
+      std::cerr << " APE_DET_TIMEOUT" << std::endl;
+      break;
+    case 0xF5:
+      std::cerr << " APE_OOT" << std::endl;
+      break;
+    case 0xF6:
+      std::cerr << " APE_PROTOCOL_ERROR" << std::endl;
+      break;
+    case 0xF7:
+      std::cerr << " APE_LANE_FIFO_OVERFLOW_ERROR" << std::endl;
+      break;
+    case 0xF8:
+      std::cerr << " APE_FSM_ERROR" << std::endl;
+      break;
+    case 0xF9:
+      std::cerr << " APE_PENDING_DETECTOR_EVENT_LIMIT" << std::endl;
+      break;
+    case 0xFA:
+      std::cerr << " APE_PENDING_LANE_EVENT_LIMIT" << std::endl;
+      break;
+    case 0xFB:
+      std::cerr << " APE_O2N_ERROR" << std::endl;
+      break;
+    case 0xFC:
+      std::cerr << " APE_RATE_MISSING_TRG_ERROR" << std::endl;
+      break;
+    case 0xFD:
+      std::cerr << " APE_PE_DATA_MISSING" << std::endl;
+      break;
+    case 0xFE:
+      std::cerr << " APE_OOT_DATA_MISSING" << std::endl;
+      break;
+    default:
+      std::cerr << " Unknown APE code" << std::endl;
+  }
+  return;
+}
 
-static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf_end,
+static inline void decode(uint8_t* laneptr, uint8_t* laneend, decoder_t* decoder,
                           uint8_t& chipId)
 {
   if ( laneptr == laneend )
   {
     return;
   }
-
-  size_t nhit = 0;
 
   uint8_t busy_on = 0;
   uint8_t busy_off = 0;
@@ -403,7 +438,9 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
       //abc = laneptr[1];
       busy_on = busy_off = 0;
       laneptr += 2;
-    } else {
+    }
+    else
+    {
       if ( chip_header_found )
       {
         if ( (laneptr[0] & 0xE0) == 0xC0 )
@@ -416,48 +453,73 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
         { // DATA SHORT
           int addr = (laneptr[0] & 0x3F) << 8 | laneptr[1];
           addr |=  (laneId << 19) | (reg << 14);
-          hitsbuf_end[nhit++] = addr;
+          decoder->m_hits.push_back(addr);
           laneptr += 2;
-        } else if ( (laneptr[0] & 0xC0) == 0x00)
+        }
+        else if ( (laneptr[0] & 0xC0) == 0x00)
         { // DATA LONG
           int addr = (laneptr[0] & 0x3F) << 8 | laneptr[1];
           addr |= (laneId << 19) | (reg << 14);
-          hitsbuf_end[nhit++] = addr;
+          decoder->m_hits.push_back(addr);
 
           uint8_t hitmap = laneptr[2]; // TODO: assert that bit 8 is 0?
           if ( hitmap & 0x01 )
-            hitsbuf_end[nhit++] = addr + 1;
+          decoder->m_hits.push_back(addr + 1);
           if ( hitmap & 0x7E )
           { // provide early out (mostly 2-pixel clusters...)
             if ( hitmap & 0x02 )
-              hitsbuf_end[nhit++] = addr + 2;
+              decoder->m_hits.push_back(addr + 2);
             if ( hitmap & 0x04 )
-              hitsbuf_end[nhit++] = addr + 3;
+              decoder->m_hits.push_back(addr + 3);
             if ( hitmap & 0x08 )
-              hitsbuf_end[nhit++] = addr + 4;
+              decoder->m_hits.push_back(addr + 4);
             if ( hitmap & 0x10 )
-              hitsbuf_end[nhit++] = addr + 5;
+              decoder->m_hits.push_back(addr + 5);
             if ( hitmap & 0x20 )
-              hitsbuf_end[nhit++] = addr + 6;
+              decoder->m_hits.push_back(addr + 6);
             if ( hitmap & 0x40 )
-              hitsbuf_end[nhit++] = addr + 7;
+              decoder->m_hits.push_back(addr + 7);
           }
           laneptr += 3;
-        } else if ( (laneptr[0] & 0xF0) == 0xB0 )
+        }
+        else if ( (laneptr[0] & 0xF0) == 0xB0 )
         { // CHIP TRAILER
           chip_trailer_found = 1;
           busy_on = busy_off = chip_header_found = 0;
           ++laneptr;
-        } else {
-          // ERROR (IDLES and BUSIES should be stripped)
-          printf("ERROR: invalid byte 0x%02X\n", laneptr[0]);
+        }
+        else if (laneptr[0] == 0xF0)
+        { // BUSY_OFF
+            ++laneptr;
+            ++busy_off;
+        }
+        else if (laneptr[0] == 0xF1)
+        { // BUSY_ON
+            ++laneptr;
+            ++busy_on;
+        }
+        else if ( (laneptr[0] & 0xF0) == 0xF0)
+        { // APE
+            std::cerr << " Chip " << (int)chipId << ":";
+          check_APE(laneptr[0]);
+          chip_trailer_found = 1;
+          busy_on = busy_off = chip_header_found = 0;
+          ++laneptr;
+        }
+        else
+        {
+          // ERROR
+            std::cerr << "ERROR: invalid byte 0x" << std::hex << (int)(laneptr[0]) << std::endl;
           while ( laneptr != laneend )
           {
-            printf(" %02X ", *(uint8_t*)laneptr);
-            ++laneptr;
+              std::cerr << " " << std::hex << (int)(*(uint8_t*)laneptr) << " ";
+              // printf(" %02X ", *(uint8_t*)laneptr);
+              ++laneptr;
           }
         }
-      } else { // chip_header
+      }
+      else
+      { // chip_header
         if ( (laneptr[0] & 0xF0) == 0xA0 )
         {
           chip_header_found = 1;
@@ -467,14 +529,34 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
           // abc = laneptr[1];
           reg = 0;
           laneptr += 2;
-        } else if ( laneptr[0] == 0x00 )
+        }
+        else if ( laneptr[0] == 0x00 )
         { // padding
           ++laneptr;
-        } else { // ERROR (IDLES and BUSIES should be stripped)
-          printf("ERROR: invalid byte 0x%02X\n", laneptr[0]);
+        }
+        else if (laneptr[0] == 0xf0)
+        { // BUSY_OFF
+          ++laneptr;
+          ++busy_off;
+        }
+        else if (laneptr[0] == 0xf1)
+        { // BUSY_ON
+          ++laneptr;
+          ++busy_on;
+        }
+        else if ( (laneptr[0] & 0xF0) == 0xF0)
+        { // APE
+            std::cerr << " Chip " << (int)chipId << ":";
+          check_APE(laneptr[0]);
+          chip_trailer_found = 1;
+          busy_on = busy_off = chip_header_found = 0;
+          ++laneptr;
+        }
+        else { // ERROR
+          std::cerr << "ERROR: invalid byte 0x" << std::hex << (int)(laneptr[0]) << std::endl;
           while ( laneptr != laneend )
           {
-            printf(" %02X ", *(uint8_t*)laneptr);
+            std::cerr << " " << std::hex << (int)(*(uint8_t*)laneptr) << " ";
             ++laneptr;
           }
         }
@@ -483,9 +565,9 @@ static inline void decode(uint8_t* laneptr, uint8_t* laneend, uint32_t*& hitsbuf
   }  // while
   if ( !chip_trailer_found )
   {
-    std::cerr << "ERROR: ALPIDE data end without data trailer" << std::endl;
+    std::cerr << "\nERROR: ALPIDE data end without data trailer.";
+    std::cerr << " HB: " << nHB << ", Strobe: " << decoder->m_strobeHits.size() << std::endl;
   }
-  hitsbuf_end += nhit;
   return;
 }
 
@@ -495,10 +577,16 @@ static inline void decoder_decode_lanes_into_hits(decoder_t* decoder)
   uint8_t chipId = 0xFF;
   for ( int i = 0; i < decoder->nlanes; ++i )
   {
-    decode(decoder->lanebuffer + decoder->lanebuf_size * i,
-            decoder->lane_ends[i], decoder->hits_end, chipId);
-    assert(chipId != 0xFF);
-    decoder->chipIds[i] = chipId;
+    if ( decoder->lanebuffer + decoder->lanebuf_size * i != decoder->lane_ends[i] )
+    {
+      size_t strobe_nhits = decoder->m_hits.size();
+      decode(decoder->lanebuffer + decoder->lanebuf_size * i,
+             decoder->lane_ends[i], decoder, chipId);
+      assert(! (decoder->trigger.strobe_id >> 52));
+      decoder->m_strobeHits[decoder->trigger.strobe_id] = decoder->m_hits.size() - strobe_nhits;
+ //     assert(chipId != 0xFF);
+      decoder->chipIds[i] = chipId;
+    }
   }
 }
 
@@ -546,6 +634,9 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
   bool header_found = false;
   bool prev_evt_complete = false;
   bool haspayload = false;
+
+  size_t n_no_continuation = 0,
+         n_packet_done = 0;
 
 
   while ( true )
@@ -626,7 +717,6 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
         continue;
       }
     }
-
     if ( rdh.feeId != decoder->feeid )
       continue;  //TODO: ...
     flx_ptr += 2 * FLX_WORD_SZ; //skip RDH
@@ -642,12 +732,21 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
     if ( !rdh.packetCounter )
     {
       nHB++;
-      //TODO add couter per trigger bit asserted in the event
+      nPhysTrg_in_HB = 0;
+      clearVec(physTrg_bco);
       //TODO check right protocol for SOC/EOC or SOT/EOT
       decoder->packet_init(true);
-      updateTrgEvtCnts(rdh, decoder);
-    } else {
-      if ( !rdh.stopBit)
+      for ( const auto& trg : Trg::allBitMap )
+      {
+        if ( (rdh.trgType >> trg) & 1 )
+        {
+          decoder->evt_cnts[trg]++;
+        }
+      }
+    }
+    else
+    {
+      if ( !rdh.stopBit )
       {
         ASSERT(! prev_evt_complete, decoder,
                 "Previous event was already complete, byte %ld of current chuck",
@@ -679,40 +778,54 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
           // lane heder: needs to be present: TODO: assert this
           //TODO assert first word after RDH and active lanes
           haspayload = false;
-        } else if ( lane == 0xE8 )
+        }
+        else if ( lane == 0xE8 )
         { // TRIGGER DATA HEADER (TDH)
           tdh.decode(gbt_word);
           header_found = true;
-          if ( !tdh.continuation )
+          uint64_t strobe_id = ((tdh.orbit << 12) | tdh.bc);
+          if ( tdh.bc ) //statistic trigger for first bc already filled on RDH
           {
-            //TODO add counter of not continuation triggers
-            decoder->trigger.orbit = tdh.orbit;
-            decoder->trigger.bc = tdh.bc;
-            if ( !tdh.no_data )
+            for ( const auto& trg : Trg::allBitMap )
             {
-              nTrg_with_data++;
-            }
-            if ( tdh.bc )
-            {
-              updateTrgEvtCnts(rdh, decoder);
+              if ( trg == Trg::BitMap::FE_RST ) //  TDH save first 12 bits only
+                break;
+              if ( ((tdh.trigger_type >> trg) & 1) )
+              {
+                decoder->evt_cnts[trg]++;
+              }
             }
           }
-        } else if ( lane == 0xF8 )
+
+          if ( (tdh.trigger_type >> Trg::PHYSICS) & 0x1 )
+          {
+            ++nPhysTrg_in_HB;
+            physTrg_bco.push_back(strobe_id);
+          }
+
+          if ( ! tdh.continuation )
+          {
+            n_no_continuation++;
+            decoder->trigger.strobe_id = strobe_id;
+          } // end if not cont
+        } // end TDH
+        else if ( lane == 0xF8 )
         { // CALIBRATION DATA WORD (CDW)
           cdw.decode(gbt_word);
           if ( decoder->isThr )
           {
             uint16_t new_row = cdw.user_field & 0xFFFF;
             uint16_t new_charge = (cdw.user_field >> 16) & 0xFFFF;
-            if ((! decoder->trigger.thscan_inj) ||\
-                (decoder->trigger.thscan_inj == decoder->thscan_nInj)) {
+            if ( (! decoder->trigger.thscan_inj) ||\
+                (decoder->trigger.thscan_inj == decoder->thscan_nInj) )
+            {
               if ( !decoder->isTun )
               {
                 ASSERT(new_row >= decoder->trigger.thscan_row, decoder,
                        "Row not increasing after thscan_injections: previous %d new %d",
                        decoder->trigger.thscan_row, new_row);
               }
-              if (new_row == decoder->trigger.thscan_row)
+              if ( new_row == decoder->trigger.thscan_row )
               { // rolling charge at change of row
                 ASSERT(new_charge > decoder->trigger.thscan_chg, decoder,
                        "Charge not increasing after max thscan_injections: previous %d, new %d [previous row %d current row %d]",
@@ -731,7 +844,9 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
               decoder->trigger.thscan_inj = 1;
               decoder->trigger.thscan_row = new_row;
               decoder->trigger.thscan_chg = new_charge;
-            } else {
+            }
+            else
+            {
               ASSERT(new_row == decoder->trigger.thscan_row, decoder,
                      "Row not correct before reaching max thscan_injections: expected %d got %d",
                      decoder->trigger.thscan_row, new_row);
@@ -743,23 +858,29 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
               decoder->trigger.thscan_inj += 1;
             }
           }
-        } else if ( lane == 0xF0 )
+        }
+        else if ( lane == 0xF0 )
         { // lane trailer
           tdt.decode(gbt_word);
           prev_evt_complete = tdt.packet_done;
           if ( tdt.packet_done )
           {
-            // TODO add counter and check == no continuation counter
+            n_packet_done++;
+            assert(n_no_continuation == n_packet_done);
           }
-        } else if (lane == 0xE4)
+        }
+        else if (lane == 0xE4)
         { //DIAGNOSTIC DATA WORD (DDW)
           // TODO add diagnostic dataword decoder
-          // to do assert stop bit = 1
-        } else if ( ((lane >> 5) & 0x7) == 0x5 )
+          assert(rdh.stopBit);
+        }
+        else if ( ((lane >> 5) & 0x7) == 0x5 )
         { //IB DIAGNOSTIC DATA
           // decode IB diagnostic word
           cerr << "WARNING!!! IB diagnostic data word received and skipped." << endl;
-        } else { // lane payload
+        }
+        else
+        { // lane payload
           ASSERT(((lane >> 5) & 0x7) == 0x1, decoder,
                  "Wrong GBT Word %x in byte %ld, it is not an IB word",
                  lane, decoder->ptr_pos(flx_ptr));
@@ -783,8 +904,8 @@ static inline EXIT_CODE decoder_read_event_into_lanes(decoder_t* decoder)
           prev_evt_complete = false;
           header_found = false;
         }
-      } //for igbt
-      flx_ptr += FLX_WORD_SZ;
+     } //for igbt
+     flx_ptr += FLX_WORD_SZ;
     }
     if ( rdh.stopBit )
     {
@@ -892,8 +1013,11 @@ void run_thrana(struct decoder_t* decoder, string& prefix,
         bzero(sumd2, nChipsPerLane * 1024 * sizeof(float) );
         prev_row = iRow;
       }
-      int nhits = decoder->hits_end - decoder->hitsbuffer;
-      fillrowhist(rowhist, decoder->hitsbuffer, nhits, (decoder->isTun) ? chipRow[iRow] : iRow);
+      // only one strobe per HB for Threshold
+      assert(decoder->m_strobeHits.size() == 1);
+      nStrobe += decoder->m_strobeHits.size();
+      int nhits = decoder->m_hits.size();
+      fillrowhist(rowhist, decoder->m_hits.data(), nhits, (decoder->isTun) ? chipRow[iRow] : iRow);
       iInj++;
       if ( iInj == decoder->thscan_nInj )
       {
@@ -961,7 +1085,7 @@ void run_thrana(struct decoder_t* decoder, string& prefix,
     fname << prefix << ( (prefix != "") ? "_" : "") << "rtn_map_" << decoder->feeid << ".dat";
     save_file(fname.str(), n_row, nChipsPerLane, rmss);
   }
-  printStat(nHB, nHB_with_data, nTrg_with_data);
+  printStat(nHB, nHB_with_data, nStrobe);
   _mm_free(lastrowhist);
   _mm_free(rowhist);
   _mm_free(sumd2);
@@ -1001,20 +1125,38 @@ void run_fhrana(struct decoder_t* decoder, string& prefix)
     } else if ( ret == HB_DATA_DONE )
     {
       nHB_with_data++;
-      int nhits = decoder->hits_end - decoder->hitsbuffer;
-      transformhits(decoder->hitsbuffer, nhits);
+      nStrobe += decoder->m_strobeHits.size();
+      int nhits = decoder->m_hits.size();
+      transformhits(decoder->m_hits.data(), nhits);
       if ( nhits < 0 )
       {
         printf("\nERROR IN EVENT %d\n", nHB);
         printf("POS: %d\n", (int)decoder->file.tellg());
       } else {
-        fillhitmap(hitmap, decoder->hitsbuffer, nhits);
+        fillhitmap(hitmap, decoder->m_hits.data(), nhits);
+        // Help code to retrieve hit information for eache strobe in the HB.
+//        using Iter =  std::vector<uint32_t>::iterator;
+//        Iter hiter_beg = decoder->m_hits.begin();
+//        for ( auto&& strobe : decoder->m_strobeHits )
+//        {
+//          uint64_t strobe_id = strobe.first; //  strobe_bco = strobe_id[51:12], strobe_bc = strobe_id[11:0]
+//          Iter hiter_end = hiter_beg + strobe.second;
+//          for ( Iter hiter = hiter_beg; hiter < hiter_end; ++hiter )
+//          {
+//            uint32_t hit = *hiter;
+//          }
+//          hiter_beg = hiter_end;
+//        }
       }
-    } else if ( ret == HB_NO_DATA_DONE )
+    }
+    else if ( ret == HB_NO_DATA_DONE )
+    {
       continue;
+    }
     else
       exit(-1);
   }
+
   std::cout << std::endl;
 
   ostringstream fname;
@@ -1037,7 +1179,7 @@ void run_fhrana(struct decoder_t* decoder, string& prefix)
     ntotal += ntot[lane];
   }
   printf("Total number of hits: %lu. \n", ntotal);
-  printStat(nHB, nHB_with_data, nTrg_with_data);
+  printStat(nHB, nHB_with_data, nStrobe);
   printTrgCnts(decoder);
 }
 

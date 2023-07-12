@@ -11,10 +11,9 @@
 namespace
 {
   template <class T>
-  void CleanVec(std::vector<T> &v)
+  void clearVec(std::vector<T> &v)
   {
     std::vector<T>().swap(v);
-    v.shrink_to_fit();
   }
 }
 
@@ -91,23 +90,14 @@ struct rdh_t
     feeId         = *(reinterpret_cast<uint16_t*>(rdh_ptr + 34) ) & 0xFFFF;
     sourceId      = *(reinterpret_cast<uint8_t*>(rdh_ptr + 36) ) & 0xFF;
     detectorField = *(reinterpret_cast<uint32_t*>(rdh_ptr + 37) ) & 0xFFFFFFFF;
-    bc            = *(reinterpret_cast<uint16_t*>(rdh_ptr + 41) ) & 0xFFF;
-    orbit         = *(reinterpret_cast<uint64_t*>(rdh_ptr + 43) ) & 0xFFFFFFFFFF;
+    bc            = *(reinterpret_cast<uint16_t*>(rdh_ptr + 42) ) & 0xFFF;
+    orbit         = *(reinterpret_cast<uint64_t*>(rdh_ptr + 46) ) & 0xFFFFFFFFFF;
     trgType       = *(reinterpret_cast<uint32_t*>(rdh_ptr + 52) ) & 0xFFFFFFFF;
     packetCounter = *(reinterpret_cast<uint16_t*>(rdh_ptr + 56) ) & 0xFFFF;
     stopBit       = *(reinterpret_cast<uint8_t*>(rdh_ptr + 58) ) & 0xFF;
     priority      = *(reinterpret_cast<uint8_t*>(rdh_ptr + 59) ) & 0xFF;
     rdhGBTcounter = *(reinterpret_cast<uint16_t*>(rdh_ptr + 62) ) & 0xFFFF;
-
-//    for ( const auto& trg : Trg::allBitMap )
-//    {
-//      if ( ((trgType >> trg) & 1) == 1 )
-//      {
-//        trgVector.push_back(Trg::BitMapName[trg]);
-//      }
-//    }
-//    assert(std::find(trgVector.begin(), trgVector.end(), "PP") == trgVector.end() );
-//    assert(std::find(trgVector.begin(), trgVector.end(), "CAL") == trgVector.end() );
+    assert(rdhGBTcounter == 0x3);
   }
 };
 
@@ -176,16 +166,14 @@ struct cdw_t
 
 struct trg_t
 {
-  uint64_t orbit  : 40;
-  uint16_t bc     : 12;
+  uint64_t strobe_id;
 
-  int thscan_row = 0;
-  int thscan_chg = 0;
-  int thscan_inj = 0;
+  int thscan_row;
+  int thscan_chg;
+  int thscan_inj;
 
   trg_t():
-    orbit(0),
-    bc(0),
+    strobe_id(0xFFF0000000000000),
     thscan_row(-1),
     thscan_chg(-1),
     thscan_inj(0)

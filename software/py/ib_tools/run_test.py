@@ -34,6 +34,7 @@ if __name__ == "__main__":
 
     test_list = [
         ReadoutTest, FakeHitRate, FelixFakeHitRate, FakeHitRateWithPulsing,
+        FelixTriggered, FelixGTMContinuous, FelixGTMTriggered,
         ThresholdScan, ThresholdTuning, AnalogueScan, DigitalScan,
         FIFOTest, DACScan, CableResistanceMeasurement, ReadWrite,
         ReadoutTestDynamicPreparation, ReadoutTestDynamicRunning]
@@ -138,7 +139,12 @@ if __name__ == "__main__":
         test.set_link_speed(conf.getint(args.setup, 'link_speed'))
         test.check_clock_source = conf.getboolean(args.setup, 'check_clock_source', fallback=True)
 
-        pixel_mask_dict = json.loads(conf.get(args.setup, 'pixel_mask_dict', fallback='{}'))
+        #pixel_mask_dict = json.loads(conf.get(args.setup, 'pixel_mask_dict', fallback='{}'))
+        pixel_mask_dict = {}
+        json_file = conf.get(args.setup, 'pixel_mask_dict', fallback='{}')
+        if os.path.isfile(json_file):
+            with open(json_file) as jfile:
+                pixel_mask_dict = json.load(jfile)
         if len(pixel_mask_dict): test.set_pixel_mask_dictionary(pixel_mask_dict)
         region_mask_dict = json.loads(conf.get(args.setup, 'region_mask_dict', fallback='{}'))
         if len(region_mask_dict): test.set_region_mask_dictionary(region_mask_dict)

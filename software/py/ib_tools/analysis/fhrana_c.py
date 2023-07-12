@@ -14,7 +14,7 @@ class HitMapReader:
         self.data = None
         self.f = open(self.filename, 'r')
 
-    def main(self,noise_cut=10, ntrg=1e6):
+    def main(self, noise_cut=10, ntrg=1e6, gbt_channel=0):
 
         eventTime = 4.455e-5 # 44.550 us
         fname = os.path.basename(self.filename)
@@ -44,9 +44,9 @@ class HitMapReader:
             totalnoisy = np.count_nonzero(data_pixels[chip, data_pixels[chip] >= noise_cut])
             total_hits += n_hits
             noisypixels = np.argwhere(data_pixels[chip] >= noise_cut)
-            print("chip",chip)
-            print("noisy",noisypixels)
-            print("totalnoisy",totalnoisy)
+            print(f"chip {gbt_channel*3+chip}")
+            print(f"noisy {noisypixels}")
+            print(f"totalnoisy {totalnoisy}")
             noiseOccMap = np.divide(data_pixels[chip], ntrg)
             noiseOccMap[noiseOccMap==0] = np.nan
 
@@ -69,9 +69,8 @@ class HitMapReader:
             ax.scatter(noisypixels[:,1],noisypixels[:,0], color='black', marker="+", label="Noisy Pixel")
             plt.savefig(fname + f"_{chip}_noiseOccupancymap.png")
 
+        print(f"Total hits: {total_hits}")
 
-        print("Total hits: " + str(total_hits))
-        return True
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -89,10 +88,15 @@ if __name__ == '__main__':
     print("Reading file: " + filepath)
     print("Noise cut: " + str(noise_cut))
     print("Number of triggers: " + str(ntrg))
+    _,tail = os.path.split(filepath)
+    sub1 = tail.split(".")[0]
+    feeid = int(sub1.split("_")[2])
+    layer = (feeid & 0x7000) >> 12
+    gbt_channel = (feeid & 0x0300) >> 8
+    stave = feeid & 0x003f
+    print(f"feeid 0x{feeid:x} layer {layer} gbt_channel {gbt_channel} stave {stave}")
     reader = HitMapReader(filepath)
-    reader.main(noise_cut, ntrg)
+    reader.main(noise_cut, ntrg, gbt_channel)
 
     if showplots:
         plt.show()
-
-    exit(0)

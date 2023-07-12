@@ -10,3 +10,5 @@ from .fifo_test import FIFOTest
 from .dac import DACScan
 from .cable_resistance_measurement import CableResistanceMeasurement
 from .rw_test import ReadWrite
+from .flx_triggered import FelixTriggered
+from .flx_gtm import FelixGTMContinuous, FelixGTMTriggered

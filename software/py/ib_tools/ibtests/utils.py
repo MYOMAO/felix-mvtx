@@ -576,7 +576,7 @@ def print_counters_ru_datapathmon_summary(ru_counters_list):
             cnts = counters['datapathmon']
             line =('  ' + RESET+counters['id'] + ''.join(
                 (RED if (key in keys_not_zero and c[key]>0) or (key in keys_zero and c[key]==0) else RESET) +
-                '{:>11}'.format(c[key]) for c in cnts) + '\n')
+                '{:>11}'.format(c[key]) for c in cnts) + RESET + '\n')
             msg+=line
             if RED in line:
                 bad[key].append(counters['id'])
